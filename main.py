@@ -1,88 +1,167 @@
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from telegram import ReplyKeyboardMarkup
 import logging
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 logging.basicConfig(level=logging.DEBUG)
 
-TOKEN = "8396425007:AAFz6k-o2iy6Ypo5SfAxcn1ryt2Ga1UwdEA"
+# التوكن بتاعك
+TOKEN = "التوكن_اللي_شغال_عندك"
 
-# مراحل جمع البيانات
-NAME, PHONE, CITY, CATEGORY, DETAILS = range(5)
-
-# لوحة الخدمات
+# لوحة المفاتيح الرئيسية
 keyboard = [
-    ['💻 برامج السوفت وير', '🚰 الأدوات الصحية', '🛠️ صيانة واستشارة']
+    ['🚀 الخدمات الفضائية', '🚰 الأدوات الصحية'],
+    ['💻 برامج السوفت وير', '📞 كلمني مباشر'],
+    ['🏢 اعرف عنا اكتر']
 ]
-reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def start(update, context):
-    update.message.reply_text("أهلاً بيك في *Abo Joe Space for Development* 🚀💫\n\nيلا نبدأ نسجّل طلبك 👇\n\n*اكتب اسمك كامل:*", parse_mode="Markdown")
-    return NAME
-
-def get_name(update, context):
-    context.user_data["name"] = update.message.text
-    update.message.reply_text("تمام يا باشا ✍️\n\nدلوقتي ابعتلي *رقم الواتساب*:", parse_mode="Markdown")
-    return PHONE
-
-def get_phone(update, context):
-    context.user_data["phone"] = update.message.text
-    update.message.reply_text("فين مكانك أو مدينتك؟ 🏙️")
-    return CITY
-
-def get_city(update, context):
-    context.user_data["city"] = update.message.text
-    update.message.reply_text("اختار نوع الخدمة 👇", reply_markup=reply_markup)
-    return CATEGORY
-
-def get_category(update, context):
-    context.user_data["category"] = update.message.text
-    update.message.reply_text("تمام ✅\n\nاكتبلي *التفاصيل / وصف طلبك* 📄", parse_mode="Markdown")
-    return DETAILS
-
-def get_details(update, context):
-    context.user_data["details"] = update.message.text
-
-    name = context.user_data["name"]
-    phone = context.user_data["phone"]
-    city = context.user_data["city"]
-    category = context.user_data["category"]
-    details = context.user_data["details"]
-
-    msg = f"""
-🚀 *تم تسجيل طلب جديد:*
-
-👤 الاسم: {name}
-📞 الواتساب: {phone}
-🏙️ المدينة: {city}
-🔧 نوع الخدمة: {category}
-📄 التفاصيل:
-{details}
-
-سيتم التواصل معك قريبًا يا غالي ♥️
-    """
-
-    update.message.reply_text(msg, parse_mode="Markdown", reply_markup=reply_markup)
-    return ConversationHandler.END
-
-def cancel(update, context):
-    update.message.reply_text("تم الإلغاء ✋🙂")
-    return ConversationHandler.END
-
-updater = Updater(TOKEN, use_context=True)
-dp = updater.dispatcher
-
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        NAME: [MessageHandler(Filters.text, get_name)],
-        PHONE: [MessageHandler(Filters.text, get_phone)],
-        CITY: [MessageHandler(Filters.text, get_city)],
-        CATEGORY: [MessageHandler(Filters.text, get_category)],
-        DETAILS: [MessageHandler(Filters.text, get_details)],
+# بيانات المنتجات
+products = {
+    'الأدوات الصحية': {
+        'حوض': '🛁 حوض حمام تركي سحاب \n• ضمان 5 سنين \n• ألوان متعددة \n• تركيب مجاني',
+        'خلاط': '🚿 خلاط تركي سحاب \n• ضمان 5 سنين \n• توفير 40% في المياه \n• تصميم أوروبي',
+        'بيديه': '💎 بيديه شاور \n• ضمان 3 سنين \n• مقاوم للصدأ \n• تدفق قوي'
     },
-    fallbacks=[CommandHandler("cancel", cancel)]
-)
+    'الخدمات الفضائية': {
+        'تطبيقات': '📱 تطبيقات فضائية \n• تصميم مبتكر \n• سرعة فائقة \n• دعم فني 24/7',
+        'مواقع': '🌐 مواقع فضائية \n• تصاميم خارج الأرض \n• أمان عالي \n• استضافة مجانية'
+    }
+}
 
-dp.add_handler(conv_handler)
+def start_bot(update, context):
+    user = update.message.from_user
+    welcome_text = f"""🚀 اهلا بيك في ابو جو للتطوير الفضائي! 😄
+
+{user.first_name}.. قولي اخدمك ازاي ياعم الناس؟ 🙃
+
+انا ☝️ معاك هنا ومش هسيبك تمشي غير وانت مبسوط!"""
+    
+    update.message.reply_text(welcome_text, reply_markup=reply_markup)
+
+def handle_message(update, context):
+    user_text = update.message.text.lower()
+    user = update.message.from_user
+    
+    # لو العميل كتب تحية
+    if any(word in user_text for word in ['سلام', 'اهلا', 'اهلين', 'مرحبا', 'السلام', 'صباح', 'مساء']):
+        response = f"وعليكم السلام 🌹\nازيك يافندم عامل ايه؟ 😃\n\nاتفضل ازاي اقدر اساعدك او اخدمك؟"
+        update.message.reply_text(response, reply_markup=reply_markup)
+    
+    # الخدمات الفضائية
+    elif user_text == '🚀 الخدمات الفضائية':
+        services_text = """🚀 خدماتنا الفضائية:
+        
+• 📱 تطبيقات جوال
+• 🌐 مواقع إلكترونية  
+• 🛰️ أنظمة إدارة
+• 🔧 برامج مخصصة
+
+اختار نوع الخدمة اللي تحبها 👆"""
+        update.message.reply_text(services_text, reply_markup=ReplyKeyboardMarkup([
+            ['📱 تطبيقات', '🌐 مواقع'],
+            ['🛰️ أنظمة', '🔧 برامج مخصصة'],
+            ['🏠 الرئيسية']
+        ], resize_keyboard=True))
+    
+    # الأدوات الصحية
+    elif user_text == '🚰 الأدوات الصحية':
+        products_text = """🚰 أدواتنا الصحية:
+        
+• 🛁 أحواض حمامات
+• 🚿 خلاطات مياه
+• 💎 بيديه شاور
+• 🛠️ مستلزمات تركيب
+
+اختار المنتج اللي يعجبك 👆"""
+        update.message.reply_text(products_text, reply_markup=ReplyKeyboardMarkup([
+            ['🛁 حوض', '🚿 خلاط'],
+            ['💎 بيديه', '🛠️ مستلزمات'],
+            ['🏠 الرئيسية']
+        ], resize_keyboard=True))
+    
+    # اختيار منتج معين
+    elif user_text in ['🛁 حوض', 'حوض']:
+        response = """تمام 🤝 
+
+🛁 حوض حمام تركي سحاب 
+• ضمان 5 سنين 
+• ألوان متعددة 
+• تركيب مجاني
+
+وايه رأي حضرتك لما تشوف الخلاطات التركي السحاب وعليه ضمان 5 سنين؟ 😊"""
+        
+        update.message.reply_text(response, reply_markup=ReplyKeyboardMarkup([
+            ['🚿 خلاط', '💎 بيديه'],
+            ['🛁 اطلب الحوض', '🏠 الرئيسية']
+        ], resize_keyboard=True))
+    
+    elif user_text in ['🚿 خلاط', 'خلاط']:
+        response = """🚿 خلاط تركي سحاب 
+• ضمان 5 سنين 
+• توفير 40% في المياه 
+• تصميم أوروبي
+
+السعر: 850 جنيه 
+خصم 10% للكميات 👌"""
+        
+        update.message.reply_text(response, reply_markup=ReplyKeyboardMarkup([
+            ['🛁 حوض', '💎 بيديه'],
+            ['🚿 اطلب الخلاط', '💳 استفسار عن سعر'],
+            ['🏠 الرئيسية']
+        ], resize_keyboard=True))
+    
+    # طلب المنتج
+    elif any(word in user_text for word in ['اطلب', 'عايز', 'أريد', 'محتاج']):
+        response = """🤝 تمام يافندم!
+
+اسيب رسالتك وهرد عليك بعد شوية.. 
+هيجيلك تنبيه لما نرد! 📩
+
+وشرفتنا ونورتنا! 🌷
+مكانكم اي وقت!"""
+        update.message.reply_text(response)
+        
+        # هنا هنبعت إشعار للإيميل أو الجوجل شيت
+    
+    # عن الشركة
+    elif user_text == '🏢 اعرف عنا اكتر':
+        response = """🏢 أبو جو للتطوير الفضائي:
+
+• 🚀 بنطور برامج خارج الأرض
+• 🚰 وبنوفر أدوات صحية من تركيا
+• ⭐ أكثر من 500 عميل راضي
+• 📞 دعم فني 24 ساعة
+
+مكانكم اي وقت! 🌷"""
+        update.message.reply_text(response, reply_markup=reply_markup)
+    
+    # كلمني مباشر
+    elif user_text == '📞 كلمني مباشر':
+        response = """📞 تواصل معنا مباشر:
+
+• 📞 0123456789
+• 📧 g642rr@gmail.com
+• 🏢 القاهرة - مصر
+
+⏰ 24 ساعة 👌"""
+        update.message.reply_text(response, reply_markup=reply_markup)
+    
+    # العودة للرئيسية
+    elif user_text == '🏠 الرئيسية':
+        start_bot(update, context)
+    
+    # أي رسالة أخرى
+    else:
+        response = "اتفضل ازاي اقدر اساعدك او اخدمك؟ 😊"
+        update.message.reply_text(response, reply_markup=reply_markup)
+
+print("🚀 أبو جو للتطوير الفضائي شغال!")
+updater = Updater(TOKEN, use_context=True)
+
+# علشان يبدأ بأي رسالة مش /start بس
+updater.dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+updater.dispatcher.add_handler(CommandHandler('start', start_bot))
+
 updater.start_polling()
-print("🚀 البوت شغال يا كبير!")
