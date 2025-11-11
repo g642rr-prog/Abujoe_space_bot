@@ -1,11 +1,11 @@
-# main.py — Abo Joe Bot (friendly seller, continuous chat, OpenAI)
+# ----------------- main_fixed.py — Abo Joe Bot (friendly seller, OpenAI with real error logging) -----------------
 import os
 import logging
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 )
-from openai import OpenAI
+from openai import OpenAI, error
 
 # ----------------- CONFIG -----------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -35,12 +35,11 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 # ----------------- Utility helpers -----------------
 def short_system_prompt():
-    # system prompt to shape replies (Egyptian, friendly, seller-with-humor)
     return (
         "You are 'Abo Joe' — a friendly Egyptian seller and tech helper. "
         "Keep tone warm, slightly joking but respectful, helpful, brief when needed. "
-        "When a user asks about products, ask clarifying questions (useful: budget, usage, brand preference). "
-        "When casual chit-chat, reply playfully and bring conversation toward offering help."
+        "When a user asks about products, ask clarifying questions (budget, usage, brand preference). "
+        "For casual chit-chat, reply playfully but guide the conversation to offer help."
     )
 
 async def call_openai_chat(user_text: str) -> str:
@@ -54,14 +53,18 @@ async def call_openai_chat(user_text: str) -> str:
             max_tokens=350
         )
         return resp.choices[0].message.content.strip()
+    except error.OpenAIError as e:
+        # Catch OpenAI-specific errors
+        logger.exception("OpenAI API error")
+        return f"يا معلم حصلت مشكلة في الدماغ الصناعي عندي: {str(e)} 😅"
     except Exception as e:
-        logger.exception("OpenAI call failed")
-        return "يا معلم حصلت مشكلة بسيطة في الدماغ الصناعي عندي، حاول تاني شوية 😅"
+        # Catch any other errors
+        logger.exception("Unexpected error in OpenAI call")
+        return f"يا معلم حصلت مشكلة غير متوقعة: {str(e)} 😅"
 
 # ----------------- Conversation helpers -----------------
 def set_state(context: ContextTypes.DEFAULT_TYPE, key: str, value):
-    user_data = context.user_data
-    user_data[key] = value
+    context.user_data[key] = value
 
 def get_state(context: ContextTypes.DEFAULT_TYPE, key: str, default=None):
     return context.user_data.get(key, default)
@@ -86,7 +89,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     lower = text.lower()
 
-    # If user just pressed a menu button - jump to that flow
+    # زرار من المينيو
     if text == "🛠 صيانة / سوفت وير":
         set_state(context, "flow", "service")
         await update.message.reply_text(
@@ -129,33 +132,28 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # If we are waiting for contact details
+    # لو مستني بيانات اتصال
     if get_state(context, "awaiting_contact"):
-        # save contact (in memory; later we add sheets)
         name = update.effective_user.first_name
         chat_id = update.effective_chat.id
-        # store minimal info in user_data
         set_state(context, "contact_info", {"name": name, "chat_id": chat_id, "message": text})
         clear_state(context, "awaiting_contact")
         await update.message.reply_text("تمام يا بطل 👍 الفريق استلم بياناتك وهنتواصل معاك قريباً.", reply_markup=MAIN_KEYBOARD)
         return
 
-    # If we are inside a product/service flow, ask clarifying Qs
+    # لو في فلتر flow
     current_flow = get_state(context, "flow")
     if current_flow in ("service", "sanitary", "parts"):
-        # if we don't have 'clarified' yet, ask the main clarifying question
         if not get_state(context, "clarified"):
             set_state(context, "clarified", True)
-            # Ask two quick clarifying questions: budget and purpose
             set_state(context, "expecting_budget", True)
             set_state(context, "last_user_text", text)
             await update.message.reply_text(
-                "جميل يا معلم 👍\nقبل ما أرشّحلك أحسن حاجة: تقولي تقريباً ميزانيتك قد إيه؟ ولا تحب أدلك على حاجات على مستويات سعرية؟",
+                "جميل يا معلم 👍\nقبل ما أرشّحلك أحسن حاجة: تقولي تقريباً ميزانيتك قد إيه؟",
                 reply_markup=MAIN_KEYBOARD
             )
             return
 
-        # if we're expecting budget
         if get_state(context, "expecting_budget"):
             set_state(context, "budget", text)
             clear_state(context, "expecting_budget")
@@ -170,7 +168,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if get_state(context, "expecting_usage"):
             set_state(context, "usage", text)
             clear_state(context, "expecting_usage")
-            # Build suggestion prompt for AI (short)
             user_brief = get_state(context, "last_user_text") or "مطلوب"
             budget = get_state(context, "budget")
             usage = get_state(context, "usage")
@@ -178,31 +175,25 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"العميل طلب: {user_brief}\n"
                 f"ميزانية: {budget}\n"
                 f"الاستخدام: {usage}\n"
-                "اقترح 3 خيارات: (1) خيار ممتاز وضمان (2) خيار شيك ومتوسط السعر (3) خيار اقتصادي. "
-                "كل خيار سطر واحد مع اقتراح سؤال متابعة واحد."
+                "اقترح 3 خيارات: (1) ممتاز (2) متوسط السعر (3) اقتصادي. "
+                "كل خيار سطر واحد مع اقتراح سؤال متابعة."
             )
             ai_reply = await call_openai_chat(prompt)
-            # Save last suggestion
             set_state(context, "last_suggestion", ai_reply)
             await update.message.reply_text(
                 f"حضرتك تمام يا باشا 👇\n\n{ai_reply}\n\nعايز أبعتلك صور للكلام دا ولا تختار من اللي فوق؟",
                 reply_markup=MAIN_KEYBOARD
             )
-            # end flow but keep suggestion stored
             clear_state(context, "flow")
             clear_state(context, "clarified")
             return
 
-    # If none of the above flows, handle general conversation — reply via OpenAI
-    # Also ensure even single character like "." gets replied
+    # لو الكلام عام
     if text == "":
-        # empty message edge-case
         await update.message.reply_text("يا عم اكتبلي حبة حاجة بسيطة عشان أقدر أساعدك 😅", reply_markup=MAIN_KEYBOARD)
         return
 
-    # Build a friendly prompt to keep style consistent
     prompt = f"User: {text}\nRespond as a friendly Egyptian seller (Abo Joe). Keep it short, helpful, and playful."
-
     ai_answer = await call_openai_chat(prompt)
     await update.message.reply_text(ai_answer, reply_markup=MAIN_KEYBOARD)
 
@@ -210,9 +201,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
-    # reply to any text (even '.' ), ignore commands
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-
     logger.info("🚀 Abo Joe Bot is running...")
     app.run_polling()
 
