@@ -1,128 +1,219 @@
+# main.py — Abo Joe Bot (friendly seller, continuous chat, OpenAI)
 import os
+import logging
 from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+)
 from openai import OpenAI
 
-# ====== 1) قراءة التوكنات من Environment Variables ======
-BOT_TOKEN = os.getenv("ضع التوكن هنا")
+# ----------------- CONFIG -----------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("Missing TELEGRAM_TOKEN in environment variables.")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Missing OPENAI_API_KEY in environment variables.")
+
+# OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ====== 2) لوحة المفاتيح الأساسية ======
-keyboard = [
-    ['💻 برامج السوفت وير', '🚰 الأدوات الصحية'],
-    ['📞 اتصل بنا', '🛠️ طلب خدمة'],
-    ['🏢 عن أبو جو للتطوير الفضائي']
-]
-reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("AboJoeBot")
 
-# ====== 3) رد AI ذكي ورايق زي ما اتفقنا ======
-async def ai_reply(message: str) -> str:
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": "ردك يكون خفيف ومصري ومرح ومحترم وبشوش."},
-            {"role": "user", "content": message}
-        ]
+# ----------------- Keyboard -----------------
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🛠 صيانة / سوفت وير", "🚰 أدوات صحية"],
+        ["🛰 منتجات وقطع غيار", "💬 أتكلّم مع الدعم"],
+        ["🏢 عن أبو جو"]
+    ],
+    resize_keyboard=True
+)
+
+# ----------------- Utility helpers -----------------
+def short_system_prompt():
+    # system prompt to shape replies (Egyptian, friendly, seller-with-humor)
+    return (
+        "You are 'Abo Joe' — a friendly Egyptian seller and tech helper. "
+        "Keep tone warm, slightly joking but respectful, helpful, brief when needed. "
+        "When a user asks about products, ask clarifying questions (useful: budget, usage, brand preference). "
+        "When casual chit-chat, reply playfully and bring conversation toward offering help."
     )
-    return response.choices[0].message.content
 
-# ====== 4) رسالة البداية ======
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    welcome_text = f"""
-🌙 أهلاً بنجم الفضاء **{user.first_name}** 😄
+async def call_openai_chat(user_text: str) -> str:
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": short_system_prompt()},
+                {"role": "user", "content": user_text}
+            ],
+            max_tokens=350
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.exception("OpenAI call failed")
+        return "يا معلم حصلت مشكلة بسيطة في الدماغ الصناعي عندي، حاول تاني شوية 😅"
 
-🚀 **أبو جو للتطوير الفضائي والسوفت وير والأدوات الصحية**
+# ----------------- Conversation helpers -----------------
+def set_state(context: ContextTypes.DEFAULT_TYPE, key: str, value):
+    user_data = context.user_data
+    user_data[key] = value
 
-إحنا هنا نخدمك، ونفهمك، ونساعدك لحد آخر المشوار ❤️  
-قول بس "يالا بينا" وانا ☝️ معاك ومش هسيبك غير وانت مبسوط 🙃
+def get_state(context: ContextTypes.DEFAULT_TYPE, key: str, default=None):
+    return context.user_data.get(key, default)
 
-اختار نوع الخدمة من القايمة اللي تحت 👇
-"""
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+def clear_state(context: ContextTypes.DEFAULT_TYPE, *keys):
+    for k in keys:
+        if k in context.user_data:
+            del context.user_data[k]
 
-# ====== 5) معالجة الرسائل ======
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+# ----------------- Handlers -----------------
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = (
+        f"🚀 أهلاً بيك يا {user.first_name} في *أبو جو للتطوير الفضائي*! \n\n"
+        "أنا معاك ومش هسيبك غير وإنت مبسوط 🙃\n"
+        "قولي أخدمك ازاي يا باشا؟ 😄"
+    )
+    await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD, parse_mode="Markdown")
+    clear_state(context)  # reset any previous flow
 
-    if text == '💻 برامج السوفت وير':
-        response = """
-💻 **برامج السوفت وير المتاحة:**
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    lower = text.lower()
 
-• نظام محاسبة كامل
-• إدارة مبيعات ومخازن
-• موارد بشرية
-• أنظمة مخصصة حسب طلبك
+    # If user just pressed a menu button - jump to that flow
+    if text == "🛠 صيانة / سوفت وير":
+        set_state(context, "flow", "service")
+        await update.message.reply_text(
+            "تمام يا جميل 🤝\nإنت بتدور على خدمة صيانة ولا عايز سوفت وير جديد يتظبط للشغل؟\n"
+            "ابعتلي جملة قصيرة عن المطلوب، أو قول: *عايز مساعدة اختيار*",
+            reply_markup=MAIN_KEYBOARD,
+            parse_mode="Markdown"
+        )
+        return
 
-😃 قولي:
-**عايز عرض سعر برامج**
-"""
+    if text == "🚰 أدوات صحية":
+        set_state(context, "flow", "sanitary")
+        await update.message.reply_text(
+            "حلو قوي! قطاع الأدوات الصحية 👍\nقولي: بتجهز بيت جديد ولا تجديد؟ أو ابعتلي صورة للمكان لو تحب.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
 
-    elif text == '🚰 الأدوات الصحية':
-        response = """
-🚰 **الأدوات الصحية المتاحة:**
+    if text == "🛰 منتجات وقطع غيار":
+        set_state(context, "flow", "parts")
+        await update.message.reply_text(
+            "نقطة لصالحك 👌\nبتدور على نوع معين ولا تحب أقولك أشهر الحاجات اللي عندنا؟",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
 
-• خلاطات (محلي - تركي - أوروبي)
-• أطقم حمامات كاملة
-• مواسير ووصلات
-• مستلزمات تركيب وصيانة
+    if text == "💬 أتكلّم مع الدعم":
+        clear_state(context)
+        await update.message.reply_text(
+            "طيب يا باشا 👌 ابعتلي اسمك ورقمك وهبعته لفريق الدعم يتواصل معاك فوراً.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        set_state(context, "awaiting_contact", True)
+        return
 
-✨ ممكن أقولك على أفضل الأنواع حسب استخدامك 😉
-"""
+    if text == "🏢 عن أبو جو":
+        await update.message.reply_text(
+            "🏢 أبو جو للتطوير الفضائي — سوفت وير، أدوات صحية، و خدمة بعد البيع جدعة 👏\nنورتنا 🌷",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
 
-    elif text == '📞 اتصل بنا':
-        response = """
-📞 **وسائل الاتصال:**
+    # If we are waiting for contact details
+    if get_state(context, "awaiting_contact"):
+        # save contact (in memory; later we add sheets)
+        name = update.effective_user.first_name
+        chat_id = update.effective_chat.id
+        # store minimal info in user_data
+        set_state(context, "contact_info", {"name": name, "chat_id": chat_id, "message": text})
+        clear_state(context, "awaiting_contact")
+        await update.message.reply_text("تمام يا بطل 👍 الفريق استلم بياناتك وهنتواصل معاك قريباً.", reply_markup=MAIN_KEYBOARD)
+        return
 
-• واتس: 01090285159
-• فيسبوك: fb.com/abogroup  
-• العنوان: مصر أم الدنيا 🇪🇬
+    # If we are inside a product/service flow, ask clarifying Qs
+    current_flow = get_state(context, "flow")
+    if current_flow in ("service", "sanitary", "parts"):
+        # if we don't have 'clarified' yet, ask the main clarifying question
+        if not get_state(context, "clarified"):
+            set_state(context, "clarified", True)
+            # Ask two quick clarifying questions: budget and purpose
+            set_state(context, "expecting_budget", True)
+            set_state(context, "last_user_text", text)
+            await update.message.reply_text(
+                "جميل يا معلم 👍\nقبل ما أرشّحلك أحسن حاجة: تقولي تقريباً ميزانيتك قد إيه؟ ولا تحب أدلك على حاجات على مستويات سعرية؟",
+                reply_markup=MAIN_KEYBOARD
+            )
+            return
 
-📍 *إحنا موجودين لأي خدمة يا صاحبنا ♥️*
-"""
+        # if we're expecting budget
+        if get_state(context, "expecting_budget"):
+            set_state(context, "budget", text)
+            clear_state(context, "expecting_budget")
+            set_state(context, "expecting_usage", True)
+            await update.message.reply_text(
+                f"تمام، ميزانيتك تقريباً: *{text}* ✅\n\nطيب الاستخدام؟ (بيت جديد / تجديد / محل تجاري / صناعي ؟)",
+                parse_mode="Markdown",
+                reply_markup=MAIN_KEYBOARD
+            )
+            return
 
-    elif text == '🛠️ طلب خدمة':
-        response = """
-🛠️ تمام يا محترم 🤝
+        if get_state(context, "expecting_usage"):
+            set_state(context, "usage", text)
+            clear_state(context, "expecting_usage")
+            # Build suggestion prompt for AI (short)
+            user_brief = get_state(context, "last_user_text") or "مطلوب"
+            budget = get_state(context, "budget")
+            usage = get_state(context, "usage")
+            prompt = (
+                f"العميل طلب: {user_brief}\n"
+                f"ميزانية: {budget}\n"
+                f"الاستخدام: {usage}\n"
+                "اقترح 3 خيارات: (1) خيار ممتاز وضمان (2) خيار شيك ومتوسط السعر (3) خيار اقتصادي. "
+                "كل خيار سطر واحد مع اقتراح سؤال متابعة واحد."
+            )
+            ai_reply = await call_openai_chat(prompt)
+            # Save last suggestion
+            set_state(context, "last_suggestion", ai_reply)
+            await update.message.reply_text(
+                f"حضرتك تمام يا باشا 👇\n\n{ai_reply}\n\nعايز أبعتلك صور للكلام دا ولا تختار من اللي فوق؟",
+                reply_markup=MAIN_KEYBOARD
+            )
+            # end flow but keep suggestion stored
+            clear_state(context, "flow")
+            clear_state(context, "clarified")
+            return
 
-قولي نوع الخدمة المطلوبة:
-مثلاً:
-• عايز برنامج محاسبة
-• محتاج أسعار أدوات صحية
-• أو حتى مش عارف تختار وعايز نصيحة
+    # If none of the above flows, handle general conversation — reply via OpenAI
+    # Also ensure even single character like "." gets replied
+    if text == "":
+        # empty message edge-case
+        await update.message.reply_text("يا عم اكتبلي حبة حاجة بسيطة عشان أقدر أساعدك 😅", reply_markup=MAIN_KEYBOARD)
+        return
 
-وانا معاك خطوة بخطوة 😉
-"""
+    # Build a friendly prompt to keep style consistent
+    prompt = f"User: {text}\nRespond as a friendly Egyptian seller (Abo Joe). Keep it short, helpful, and playful."
 
-    elif text == '🏢 عن أبو جو للتطوير الفضائي':
-        response = """
-🏢 **أبو جو للتطوير الفضائي**
+    ai_answer = await call_openai_chat(prompt)
+    await update.message.reply_text(ai_answer, reply_markup=MAIN_KEYBOARD)
 
-من 2014 واحنا بنخدم الناس بحب ♥️  
-وبنقدملك:
-• حلول برمجية وقواعد بيانات
-• أنظمة إدارة
-• تجارة الأدوات الصحية
-• دعم فني وخدمة مابعد البيع
-
-🎯 *هدفنا الوحيد = نساعدك تتقدم*
-"""
-
-    else:
-        # أي رسالة تانية → نخليها للـ AI
-        response = await ai_reply(text)
-
-    await update.message.reply_text(response, reply_markup=reply_markup)
-
-# ====== 6) تشغيل البوت ======
+# ----------------- Entry point -----------------
 def main():
-    print("🚀 بوت أبو جو شغال ومستني المكوك يقلع ...")
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_command))
+    # reply to any text (even '.' ), ignore commands
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    logger.info("🚀 Abo Joe Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
